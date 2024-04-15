@@ -9,14 +9,14 @@ class Theme:
 
 
 @dataclass
-class Question:
-    id: int
-    title: str
-    theme_id: int
-    answers: list["Answer"]
-
-
-@dataclass
 class Answer:
     title: str
     is_correct: bool
+
+
+@dataclass
+class Question:
+    id: Optional[int]
+    title: str
+    theme_id: Optional[int]
+    answers: list[Answer]

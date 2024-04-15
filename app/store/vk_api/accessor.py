@@ -1,18 +1,15 @@
-import random
 import typing
+import random
 from typing import Optional
 
-from aiohttp import TCPConnector
 from aiohttp.client import ClientSession
 
 from app.base.base_accessor import BaseAccessor
-from app.store.vk_api.dataclasses import Message, Update, UpdateObject
+from app.store.vk_api.dataclasses import Message, Update, UpdateObject, UpdateMessage
 from app.store.vk_api.poller import Poller
 
 if typing.TYPE_CHECKING:
     from app.web.app import Application
-
-API_PATH = "https://api.vk.com/method/"
 
 
 class VkApiAccessor(BaseAccessor):
@@ -23,22 +20,35 @@ class VkApiAccessor(BaseAccessor):
         self.server: Optional[str] = None
         self.poller: Optional[Poller] = None
         self.ts: Optional[int] = None
+        self.group_id: Optional[int] = None
+        self.access_token: Optional[str] = None
 
     async def connect(self, app: "Application"):
-        self.session = ClientSession(connector=TCPConnector(verify_ssl=False))
-        try:
-            await self._get_long_poll_service()
-        except Exception as e:
-            self.logger.error("Exception", exc_info=e)
-        self.poller = Poller(app.store)
-        self.logger.info("start polling")
-        await self.poller.start()
+        # TODO: добавить создание aiohttp ClientSession,
+        #  получить данные о long poll сервере с помощью метода groups.getLongPollServer
+        #  вызвать метод start у Poller
+        self.access_token = app.config.bot.token
+        self.group_id = app.config.bot.group_id
+        params = {"group_id": self.group_id,
+                  "access_token": self.access_token}
+        url = self._build_query("https://api.vk.com/", "method/groups.getLongPollServer", params)
+        client_session = ClientSession()
+        response = await client_session.get(url)
+        if response.ok:
+            data = await response.json()
+            data_response = data.get("response")
+            self.session = client_session
+            self.key = data_response.get("key")
+            self.server = data_response.get("server")
+            self.ts = data_response.get("ts")
+            self.poller = Poller(app.store)
+            await self.poller.start()
 
     async def disconnect(self, app: "Application"):
-        if self.session:
+        # TODO: закрыть сессию и завершить поллер
+        if not self.session.closed:
             await self.session.close()
-        if self.poller:
-            await self.poller.stop()
+        await self.poller.stop()
 
     @staticmethod
     def _build_query(host: str, method: str, params: dict) -> str:
@@ -49,67 +59,39 @@ class VkApiAccessor(BaseAccessor):
         return url
 
     async def _get_long_poll_service(self):
-        async with self.session.get(
-            self._build_query(
-                host=API_PATH,
-                method="groups.getLongPollServer",
-                params={
-                    "group_id": self.app.config.bot.group_id,
-                    "access_token": self.app.config.bot.token,
-                },
-            )
-        ) as resp:
-            data = (await resp.json())["response"]
-            self.logger.info(data)
-            self.key = data["key"]
-            self.server = data["server"]
-            self.ts = data["ts"]
-            self.logger.info(self.server)
+        raise NotImplementedError
 
     async def poll(self):
-        async with self.session.get(
-            self._build_query(
-                host=self.server,
-                method="",
-                params={
-                    "act": "a_check",
-                    "key": self.key,
-                    "ts": self.ts,
-                    "wait": 30,
-                },
-            )
-        ) as resp:
-            data = await resp.json()
-            self.logger.info(data)
-            self.ts = data["ts"]
-            raw_updates = data.get("updates", [])
-            updates = []
-            for update in raw_updates:
-                updates.append(
-                    Update(
-                        type=update["type"],
-                        object=UpdateObject(
-                            id=update["object"]["id"],
-                            user_id=update["object"]["user_id"],
-                            body=update["object"]["body"],
-                        ),
-                    )
-                )
-            await self.app.store.bots_manager.handle_updates(updates)
+        if not self.session.closed:
+            params = {"act": "a_check",
+                      "key": self.key,
+                      "ts": self.ts,
+                      "wait": 1}
+            url = self._build_query(self.server, "", params)
+            response = await self.session.get(url)
+            if response.ok:
+                data = await response.json()
+                self.ts = data.get("ts")
+                updates = []
+                updates_data = data.get("updates")
+                for update_data in updates_data:
+                    message_data = update_data["object"]["message"]
+                    update_type = update_data["type"]
+                    id_ = message_data["id"]
+                    from_id = message_data["from_id"]
+                    text = message_data["text"]
+                    message = UpdateMessage(from_id, text, id_)
+                    update_object = UpdateObject(message)
+                    update = Update(update_type, update_object)
+                    updates.append(update)
+                await self.app.store.bots_manager.handle_updates(updates)
 
     async def send_message(self, message: Message) -> None:
-        async with self.session.get(
-            self._build_query(
-                API_PATH,
-                "messages.send",
-                params={
-                    "user_id": message.user_id,
-                    "random_id": random.randint(1, 2**32),
-                    "peer_id": "-" + str(self.app.config.bot.group_id),
-                    "message": message.text,
-                    "access_token": self.app.config.bot.token,
-                },
-            )
-        ) as resp:
-            data = await resp.json()
-            self.logger.info(data)
+        params = {
+            "access_token": self.access_token,
+            "random_id": random.randint(1, 1000000),
+            "message": message.text,
+            "chat_id": 3,
+        }
+        url = self._build_query("https://api.vk.com/", "method/messages.send", params)
+        await self.session.get(url)

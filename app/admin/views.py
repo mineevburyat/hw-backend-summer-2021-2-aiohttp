@@ -1,61 +1,36 @@
-from hashlib import sha256
-import json
-from http.client import HTTPException
-from aiohttp_apispec import request_schema, response_schema, querystring_schema
-from aiohttp.web_exceptions import HTTPNotFound, HTTPUnauthorized, HTTPForbidden, HTTPBadRequest
-# random
-from aiohttp_session import get_session, new_session
-from marshmallow import ValidationError
-from app.admin.schemes import AdminResponseSchema, AdminSchema
+from aiohttp.web_exceptions import HTTPForbidden, HTTPNotFound, HTTPUnauthorized
+from aiohttp_apispec import request_schema, response_schema, docs
+from aiohttp_session import new_session
+
+from app.admin.schemes import AdminSchemaIn, AdminSchemaOut
 from app.web.app import View
 from app.web.mixins import AuthRequiredMixin
-from app.web.utils import check_basic_auth, json_response
+from app.web.utils import json_response
 
 
 class AdminLoginView(View):
-    @request_schema(AdminSchema)
-    @response_schema(AdminResponseSchema, 200)
+    @request_schema(AdminSchemaIn)
     async def post(self):
-        data = await self.request.json()
-        try:
-            email = data['email']
-            password = data['password']
-        except KeyError:
-            raise HTTPBadRequest
-        
-        hashed_password = sha256(password.encode()).hexdigest()
-                
-        admin = await self.request.app.store.admins.get_by_email(email=email)
+        data = self.request["data"]
+        email = data["email"]
+        password = data["password"]
+        admin = await self.store.admins.login(
+            email=email, password=password)
         if not admin:
             raise HTTPForbidden
-        
-        session = await get_session(self.request)
-        session['token'] = self.request.app.config.session.key
-
-        if email == admin.email and hashed_password == admin.password:
-            session['admin'] = {}
-            session['admin'].setdefault('id', admin.id)
-            session['admin'].setdefault('email', admin.email)
-
-            raw_admin = AdminResponseSchema().dump(admin)           
-            return json_response(data=raw_admin)
-        else:
-            raise HTTPForbidden
-            
+        session_key = self.store.admins.app.config.session.key
+        session = await new_session(request=self.request)
+        session['session_key'] = session_key
+        data = AdminSchemaOut().dump(admin)
+        return json_response(data=data)
 
 
 class AdminCurrentView(AuthRequiredMixin, View):
-    @querystring_schema(AdminSchema)
-    @response_schema(AdminResponseSchema, 200)
     async def get(self):
-        admin_email = self.request.app.database.admins[0].email
-        admin = await self.request.app.store.admins.get_by_email(admin_email)
-        if admin:
-            return json_response(data=AdminResponseSchema().dump(admin))
-        else:
-            raise HTTPNotFound
-
-
-class IndexView(View):
-    async def get(self):
-        return json_response(data='Bye, hello')
+        is_auth = await self.is_auth()
+        if not is_auth:
+            raise HTTPUnauthorized
+        email = self.store.admins.app.config.admin.email
+        admin = await self.store.admins.get_by_email(email=email)
+        data = AdminSchemaOut().dump(admin)
+        return json_response(data=data)

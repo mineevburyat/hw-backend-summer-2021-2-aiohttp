@@ -21,7 +21,7 @@ class AdminConfig:
 @dataclass
 class BotConfig:
     token: str
-    group_id: int
+    group_id: str
 
 
 @dataclass
@@ -32,15 +32,10 @@ class Config:
 
 
 def setup_config(app: "Application", config_path: str):
-    # TODO: добавить BotConfig и SessionConfig по данным из config.yml
-    #!! DONE
     with open(config_path, "r") as f:
         raw_config = yaml.safe_load(f)
 
     app.config = Config(
-        session=SessionConfig(
-            key=raw_config["session"]["key"],
-        ),
         admin=AdminConfig(
             email=raw_config["admin"]["email"],
             password=raw_config["admin"]["password"],
@@ -48,5 +43,8 @@ def setup_config(app: "Application", config_path: str):
         bot=BotConfig(
             token=raw_config["bot"]["token"],
             group_id=raw_config["bot"]["group_id"],
+        ),
+        session=SessionConfig(
+            key=raw_config["session"]["key"],
         ),
     )
